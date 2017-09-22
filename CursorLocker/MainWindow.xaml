@@ -1,0 +1,13 @@
+﻿<Window
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" x:Name="CursorLocker" x:Class="CursorLocker.MainWindow"
+        mc:Ignorable="d"
+        Title="CursorLocker" Height="463" Width="537" Closing="Window_Closing" StateChanged="Window_StateChanged" KeyUp="Window_KeyUp">
+    <Grid>
+        <Button x:Name="Browse" Content="Browse" HorizontalAlignment="Left" Margin="10,0,0,10" Width="95" Height="26" VerticalAlignment="Bottom" Click="Browse_Click" FontFamily="Tahoma" FontSize="14"/>
+        <ListBox x:Name="PathBox" Margin="10,10,10,41" IsManipulationEnabled="True" IsTextSearchEnabled="False" SelectionMode="Extended" MouseUp="PathBox_MouseUp" KeyUp="PathBox_KeyUp" FontFamily="Tahoma" FontSize="14"/>
+        <TextBox x:Name="PathText" Margin="110,0,10,10" TextWrapping="Wrap" Height="26" VerticalAlignment="Bottom" ToolTip="You can also enter just the executable name here.  Press Enter to add it to the list." KeyUp="PathText_KeyUp" VerticalContentAlignment="Center" FontFamily="Tahoma" FontSize="14" MaxLines="1"/>
+    </Grid>
+</Window>
