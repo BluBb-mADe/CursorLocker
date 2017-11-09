@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -6,6 +7,9 @@ using System.DirectoryServices.Protocols;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -16,52 +20,111 @@ using Screen = System.Windows.Forms.Screen;
 using OpenFileDialog = Microsoft.Win32.OpenFileDialog;
 
 namespace CursorLocker {
-    public partial class MainWindow{
+    public partial class MainWindow {
         private readonly string _config;
         private readonly NotifyIcon _notifyIcon;
         private readonly SolidColorBrush _nameColor = new SolidColorBrush(Colors.DarkBlue);
         private readonly SolidColorBrush _errorColor = new SolidColorBrush(Colors.DarkRed);
         private readonly HashSet<string> _listeners = new HashSet<string>();
-        private readonly BackgroundWorker _bgWorker = new BackgroundWorker();
         private readonly int _pid = Process.GetCurrentProcess().Id;
+        private volatile Tuple<uint, string> _curFocus;
+        private readonly AutoResetEvent _curFocusEvent = new AutoResetEvent(false);
+        private volatile bool _listenFocus;
+        private readonly AutoResetEvent _listenFocusEvent = new AutoResetEvent(false);
 
-        public void OnFocusChangedHandler(object src, AutomationFocusChangedEventArgs args) {
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern int GetWindowTextLength(IntPtr hWnd);
+
+        private void OnFocusChangedHandler(object src, AutomationFocusChangedEventArgs args) {
             var element = src as AutomationElement;
             if (element == null) return;
-            var curPid = element.Current.ProcessId;
-            if (_pid == curPid)
-                return;
-            var names = new HashSet<string>{element.Current.Name};
-            var process = Process.GetProcessById(curPid);
-            names.Add(process.ProcessName);
-            names.Add(process.MainModule.ModuleName);
-            names.Add(process.MainModule.FileName);
-            Console.WriteLine($@"    focus changed to {string.Join(", ", names)}");
-            bool overlaps;
-            lock (_listeners)
-                overlaps = _listeners.Overlaps(names);
+            _curFocus = Tuple.Create((uint)element.Current.ProcessId, element.Current.Name);
+            _curFocusEvent.Set();
+        }
 
+        private void BindCursor(Tuple<uint, string> param){
+            var pid = (int)param.Item1;
+            if (_pid == pid)
+                return;
+            var process = Process.GetProcessById(pid);
+            var moduleName = "########";
+            var fileName = "########";
+            try {
+                moduleName = process.MainModule.ModuleName;
+                fileName = process.MainModule.FileName;
+            }
+            catch (Win32Exception){
+
+            }
+            var names = new HashSet<string>{
+                param.Item2,    // window Name
+                process.ProcessName,
+                moduleName,
+                fileName
+            };
+            param = null;
+            //Console.WriteLine($@"    focus changed to {string.Join(", ", names)}");
+            bool bound;
+            lock (_listeners)
+                bound = _listeners.Overlaps(names);
             var bounded = System.Windows.Forms.Cursor.Clip == Screen.PrimaryScreen.Bounds;
-            if (overlaps && !bounded) {
-                lock (_listeners)
-                    names.IntersectWith(_listeners);
-                
+            if (bound && !bounded) {
                 System.Windows.Forms.Cursor.Clip = Screen.PrimaryScreen.Bounds;
-                Console.WriteLine($@"    locking cursor. triggered by: {string.Join("", names)}");
-            }
-            else if (!overlaps && bounded){
+                //Console.WriteLine($@"    locking cursor. triggered by: {string.Join("", names)}");
+            } else if (!bound && bounded) {
                 System.Windows.Forms.Cursor.Clip = Rectangle.Empty;
-                Console.WriteLine(@"    unlocking cursor.");
+                //Console.WriteLine(@"    unlocking cursor.");
             }
+        }
+
+        private static Tuple<uint, string> GetCurrentFocus(){
+            var handle = GetForegroundWindow();
+            var nChars = GetWindowTextLength(handle) + 1;
+            var buff = new StringBuilder(nChars);
+            var result = "########";
+            if (GetWindowText(handle, buff, nChars) > 0) {
+                result = buff.ToString();
+            }
+            GetWindowThreadProcessId(handle, out var pid);
+            return Tuple.Create(pid, result);
         }
 
         public MainWindow(){
             InitializeComponent();
-
-            _bgWorker.DoWork += delegate{
-                Automation.RemoveAutomationFocusChangedEventHandler(OnFocusChangedHandler);
-                Console.WriteLine(@"    Focus handler disabled");
-            };
+            var t1 = new Thread(() => {
+                while (true){
+                    _listenFocusEvent.WaitOne();
+                    if (_listenFocus) {
+                        Automation.AddAutomationFocusChangedEventHandler(OnFocusChangedHandler);
+                        //Console.WriteLine(@"    Focus handler enabled");
+                    }
+                    else{
+                        Automation.RemoveAutomationFocusChangedEventHandler(OnFocusChangedHandler);
+                        //Console.WriteLine(@"    Focus handler disabled");
+                    }
+                }
+            }) { IsBackground = true };
+            var t2 = new Thread(() => {
+                while (true){
+                    if (!_curFocusEvent.WaitOne(3000)){
+                        var tu = GetCurrentFocus();
+                        BindCursor(tu);
+                    }
+                    while (_curFocus != null){
+                        var tu = Tuple.Create(_curFocus.Item1, _curFocus.Item2);
+                        _curFocus = null;
+                        BindCursor(tu);
+                    }
+                }
+            }){IsBackground = true};
+            t1.Start();
+            t2.Start();
 
             _notifyIcon = new NotifyIcon {
                 Visible = false,
@@ -89,8 +152,10 @@ namespace CursorLocker {
                 c = _listeners.Count;
                 _listeners.Add(item);
             }
-            if (c == 0)
-                Automation.AddAutomationFocusChangedEventHandler(OnFocusChangedHandler);
+            if (c == 0){
+                _listenFocus = true;
+                _listenFocusEvent.Set();
+            }
             PathBox.Items.Add(new TextBlock { Text = item });
             PathText.Text = "";
             CheckPaths();
@@ -110,7 +175,7 @@ namespace CursorLocker {
             var dlg = new OpenFileDialog{
                 FileName = "Executable",
                 DefaultExt = ".exe",
-                Filter = "Application executables (.exe)|*.exe"
+                Filter = "Executables|*.exe;*.bat;*.cmd;*.vbs|All|*.*"
             };
             
             if (dlg.ShowDialog() == true)
@@ -171,8 +236,10 @@ namespace CursorLocker {
                     c = _listeners.Count;
                 }
             }
-            if (c == 0)
-                _bgWorker.RunWorkerAsync();
+            if (c == 0){
+                _listenFocus = false;
+                _listenFocusEvent.Set();
+            }
             PathText.Text = "";
         }
     }
