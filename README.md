@@ -7,7 +7,7 @@ It is just a quickly thrown-together tool to solve a problem that had an easy fi
 ### Theoretical Todos:  
 - Autorun on user login option
 - portable mode
-- options to toggle minimize-to-tray and close-to-try
+- options to toggle minimize-to-tray and close-to-tray
 - program icons (e.g. for the tray)
 
 I probably will not work on this myself any time soon.<br>
